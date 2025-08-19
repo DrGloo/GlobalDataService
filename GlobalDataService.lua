@@ -9,16 +9,16 @@ local _Required = false
 local GlobalDataService = {}
 GlobalDataService.__index = GlobalDataService
 
-local stocks = {}
+local datas = {}
 
-local _onStockChangedCallbacks = {}
-local _onStockForceChangeCallbacks = {}
-local _onForcedStockExpiredCallbacks = {}
+local _onDataChangedCallbacks = {}
+local _onDataForceChangeCallbacks = {}
+local _onForcedDataExpiredCallbacks = {}
 
 --// Constants
-local _KEY_DATASTORE_NAME = "GlobalStockKeyStore"
-local _KEY_DATASTORE_KEY = "GlobalStockKey_v1"
-local _FORCED_STOCK_KEY = "ForcedNextStock"
+local _KEY_DATASTORE_NAME = "GlobalDataKeyStore"
+local _KEY_DATASTORE_KEY = "GlobalDataKey_v1"
+local _FORCED_DATA_KEY = "ForcedNextData"
 local restockAnchorStore = DataStoreService:GetDataStore("GlobalRestockAnchor")
 local _KEY_LENGTH = 16
 local _MAX_UPDATE_ATTEMPTS = 5
@@ -63,10 +63,10 @@ local _globalKeyFetchTimeout = 10
 
 --// Performance monitoring
 local _performanceMetrics = {
-	stockUpdates = 0,
+	dataUpdates = 0,
 	callbackErrors = 0,
 	lastHealthCheck = 0,
-	activeStocks = 0
+	activeDatas = 0
 }
 
 --// Event history for debugging
@@ -92,14 +92,14 @@ local function _log(level, msg, force)
 end
 
 --// Event history logging
-local function _logEvent(eventType, stockName, details)
+local function _logEvent(eventType, dataName, details)
 	if #_eventHistory >= _MAX_EVENT_HISTORY then
 		_eventHistory[_eventHistoryIndex] = nil
 	else
 		table.insert(_eventHistory, {
 			timestamp = os.time(),
 			type = eventType,
-			stockName = stockName,
+			dataName = dataName,
 			details = details
 		})
 	end
@@ -281,32 +281,32 @@ end
 
 --// Deterministic boundary helpers
 
-local function computeDeterministicBoundary(anchor, stockName, interval)
+local function computeDeterministicBoundary(anchor, dataName, interval)
 	local hash = 0
-	for i = 1, #stockName do
-		hash = (hash + string.byte(stockName, i)) % interval
+	for i = 1, #dataName do
+		hash = (hash + string.byte(dataName, i)) % interval
 	end
 	
 	local now = os.time()
 	return now - ((now - (anchor + hash)) % interval)
 end
 
-local function _getDeterministicRestockTime(stockData, currentTime)
+local function _getDeterministicRestockTime(dataItem, currentTime)
 	currentTime = currentTime or os.time()
-	local interval = stockData.RESTOCK_INTERVAL or 100
-	local globalKey = stockData.globalKey
-	local stockName = stockData._stockName or "UnknownStock"
+	local interval = dataItem.RESTOCK_INTERVAL or 100
+	local globalKey = dataItem.globalKey
+	local dataName = dataItem._dataName or "UnknownData"
 	
-	return computeDeterministicBoundary(globalKey, stockName, interval)
+	return computeDeterministicBoundary(globalKey, dataName, interval)
 end
 
---// MemoryStore access helpers for forced stock
+--// MemoryStore access helpers for forced data
 
 local function _getMemoryStoreMap()
-	return MemoryStoreService:GetSortedMap(_FORCED_STOCK_KEY)
+	return MemoryStoreService:GetSortedMap(_FORCED_DATA_KEY)
 end
 
-local function _getForcedStockFromMemoryStore()
+local function _getForcedDataFromMemoryStore()
 	local memStore = _getMemoryStoreMap()
 	
 	local success, data = pcall(function()
@@ -314,63 +314,63 @@ local function _getForcedStockFromMemoryStore()
 	end)
 	
 	if success and data then
-		local forcedStocks = {}
+		local forcedDatas = {}
 		
 		for _, entry in ipairs(data) do
 			if type(entry.value) == "table" and entry.key then
-				forcedStocks[entry.key] = entry.value
+				forcedDatas[entry.key] = entry.value
 			end
 		end
 		
-		return forcedStocks
+		return forcedDatas
 	end
 	
 	return nil
 end
 
-local function _saveForcedStockToMemoryStore(stockName, stockList, restocks)
+local function _saveForcedDataToMemoryStore(dataName, dataList, restocks)
 	local memStore = _getMemoryStoreMap()
 	
 	local expiration = tonumber(restocks) or 1
-	expiration = expiration * (stocks[stockName] and stocks[stockName].RESTOCK_INTERVAL or 600)
+	expiration = expiration * (datas[dataName] and datas[dataName].RESTOCK_INTERVAL or 600)
 	
 	pcall(function()
-		memStore:SetAsync(stockName, stockList, expiration)
+		memStore:SetAsync(dataName, dataList, expiration)
 	end)
 end
 
-local function _clearForcedStockInMemoryStore(stockName)
+local function _clearForcedDataInMemoryStore(dataName)
 	local memStore = _getMemoryStoreMap()
 	
 	pcall(function()
-		memStore:RemoveAsync(stockName)
+		memStore:RemoveAsync(dataName)
 	end)
 end
 
-local function _getForcedStock(stockName)
+local function _getForcedData(dataName)
 	local map = _getMemoryStoreMap()
 	
-	local success, forcedStock = pcall(function()
-		return map:GetAsync(stockName)
+	local success, forcedData = pcall(function()
+		return map:GetAsync(dataName)
 	end)
 	
-	if success and type(forcedStock) == "table" then
-		return forcedStock
+	if success and type(forcedData) == "table" then
+		return forcedData
 	end
 	
 	return nil
 end
 
-local function _callCallbacks(callbacks, stockName, oldStock, newStock, timer)
+local function _callCallbacks(callbacks, dataName, oldData, newData, timer)
 	local errorCount = 0
 	for i = #callbacks, 1, -1 do
 		local callback = callbacks[i]
 		if callback and type(callback) == "function" then
-			local ok, err = pcall(callback, stockName, oldStock, newStock, timer)
+			local ok, err = pcall(callback, dataName, oldData, newData, timer)
 			
 			if not ok then
 				errorCount += 1
-				_log("warn", "Stock callback error for '"..tostring(stockName).."': "..tostring(err), true)
+				_log("warn", "Data callback error for '"..tostring(dataName).."': "..tostring(err), true)
 				
 				-- Remove problematic callbacks after too many errors
 				if errorCount >= _MAX_CALLBACK_ERRORS then
@@ -385,16 +385,16 @@ local function _callCallbacks(callbacks, stockName, oldStock, newStock, timer)
 	end
 end
 
---// Predict stock based on seed and stock data
-local function _predictStock(stockData, restockTime)
-	assert(stockData.globalKey and type(stockData.globalKey) == "table", "Global key not set")
+--// Predict data based on seed and data data
+local function _predictData(dataItem, restockTime)
+	assert(dataItem.globalKey and type(dataItem.globalKey) == "table", "Global key not set")
 	
-	local seed = _keyAndTimeToSeed(stockData.globalKey, restockTime)
+	local seed = _keyAndTimeToSeed(dataItem.globalKey, restockTime)
 	local rand = _makeXorShift32(seed)
 	
 	local candidates = {}
 	
-	for _, itemData in ipairs(stockData.stockItems) do
+	for _, itemData in ipairs(dataItem.dataItems) do
 		if type(itemData) == "table" then
 			local itemName = itemData.name
 			if type(itemName) == "string" then
@@ -415,12 +415,12 @@ local function _predictStock(stockData, restockTime)
 		end
 	end
 	
-	if #candidates == 0 and #stockData.stockItems > 0 then
+	if #candidates == 0 and #dataItem.dataItems > 0 then
 		local fallbackRand = _makeXorShift32(seed + _SEED_FALLBACK_OFFSET_1)
-		local idx = 1 + math.floor(fallbackRand() * #stockData.stockItems)
-		idx = math.clamp(idx, 1, #stockData.stockItems)
+		local idx = 1 + math.floor(fallbackRand() * #dataItem.dataItems)
+		idx = math.clamp(idx, 1, #dataItem.dataItems)
 		
-		local fallbackItem = stockData.stockItems[idx]
+		local fallbackItem = dataItem.dataItems[idx]
 		local minAmount = math.max(1, tonumber(fallbackItem.minAmount) or 1)
 		local maxAmount = math.max(minAmount, tonumber(fallbackItem.maxAmount) or minAmount)
 		
@@ -434,8 +434,8 @@ local function _predictStock(stockData, restockTime)
 		return {{name = fallbackItem.name or "Unknown", amount = amount}}
 	end
 	
-	local minCount = math.max(1, math.min(stockData.minItems, #candidates))
-	local maxCount = math.max(minCount, math.min(stockData.maxItems, #candidates))
+	local minCount = math.max(1, math.min(dataItem.minItems, #candidates))
+	local maxCount = math.max(minCount, math.min(dataItem.maxItems, #candidates))
 	local countToReturn = minCount
 	
 	if maxCount > minCount then
@@ -449,25 +449,25 @@ local function _predictStock(stockData, restockTime)
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	end
 	
-	local predictedStock = {}
+	local predictedData = {}
 	
 	for i = 1, countToReturn do
-		table.insert(predictedStock, candidates[i])
+		table.insert(predictedData, candidates[i])
 	end
 	
-	return predictedStock
+	return predictedData
 end
 
-local function _getCurrentRestockTime(stockData, currentTime)
+local function _getCurrentRestockTime(dataItem, currentTime)
 	currentTime = currentTime or os.time()
-	local interval = stockData.RESTOCK_INTERVAL or 100
+	local interval = dataItem.RESTOCK_INTERVAL or 100
 	return currentTime - (currentTime % interval)
 end
 
-local function _isDayAllowed(stockData, now)
-	if not stockData.allowedDays then return true end
+local function _isDayAllowed(dataItem, now)
+	if not dataItem.allowedDays then return true end
 	local currentDayId = tonumber(os.date("!%w", now)) + 1
-	return stockData.allowedDays[currentDayId] == true
+	return dataItem.allowedDays[currentDayId] == true
 end
 
 local function normalizeDayInput(day)
@@ -505,12 +505,12 @@ local function convertToTime(date)
 	return timestamp - timezoneSeconds
 end
 
-local function _isWithinDateRange(stockData, now)
-	if not stockData.dateStart or not stockData.dateEnd then return true end
-	return now >= stockData.dateStart and now <= stockData.dateEnd
+local function _isWithinDateRange(dataItem, now)
+	if not dataItem.dateStart or not dataItem.dateEnd then return true end
+	return now >= dataItem.dateStart and now <= dataItem.dateEnd
 end
 
-local function stocksDifferent(a, b)
+local function datasDifferent(a, b)
 	if not a or not b then return true end
 	if #a ~= #b then return true end
 	for i = 1, #a do
@@ -523,12 +523,12 @@ local function stocksDifferent(a, b)
 end
 
 --// Calculate next polling interval based on restock timing
-local function _calculateNextPollingInterval(stockData, currentTime)
-	if not stockData or not stockData.RESTOCK_INTERVAL then
+local function _calculateNextPollingInterval(dataItem, currentTime)
+	if not dataItem or not dataItem.RESTOCK_INTERVAL then
 		return _MIN_POLLING_INTERVAL
 	end
 	
-	local nextRestock = _getCurrentRestockTime(stockData, currentTime) + stockData.RESTOCK_INTERVAL
+	local nextRestock = _getCurrentRestockTime(dataItem, currentTime) + dataItem.RESTOCK_INTERVAL
 	local timeUntilRestock = nextRestock - currentTime
 	
 	-- Poll more frequently as restock approaches
@@ -541,54 +541,54 @@ local function _calculateNextPollingInterval(stockData, currentTime)
 	end
 end
 
-local function _stockThread(stockName)
-	local stockData = stocks[stockName]
-	if not stockData then return end
+local function _dataThread(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then return end
 	
-	_performanceMetrics.activeStocks += 1
+	_performanceMetrics.activeDatas += 1
 	
-	while stockData._running do
+	while dataItem._running do
 		local now = os.time()
-		local inDate = _isWithinDateRange(stockData, now)
-		local inDays = _isDayAllowed(stockData, now)
+		local inDate = _isWithinDateRange(dataItem, now)
+		local inDays = _isDayAllowed(dataItem, now)
 		local inWindow = inDate and inDays
 		
 		if not inWindow then
-			if stockData._currentStock and #stockData._currentStock > 0 then
-				local oldStock = stockData._currentStock
-				stockData._currentStock = {}
-				_callCallbacks(_onStockChangedCallbacks, stockName, oldStock, {}, 0)
-				_logEvent("stock_cleared", stockName, {reason = "out_of_window"})
-				_log("info", "Stock '"..stockName.."' cleared (out of allowed window).", false)
+			if dataItem._currentData and #dataItem._currentData > 0 then
+				local oldData = dataItem._currentData
+				dataItem._currentData = {}
+				_callCallbacks(_onDataChangedCallbacks, dataName, oldData, {}, 0)
+				_logEvent("data_cleared", dataName, {reason = "out_of_window"})
+				_log("info", "Data '"..dataName.."' cleared (out of allowed window).", false)
 			end
 		else
-			local forcedStock = _getForcedStock(stockName)
-			if forcedStock then
-				if stocksDifferent(stockData._currentStock, forcedStock) then
-					local oldStock = stockData._currentStock
-					stockData._currentStock = forcedStock
-					_callCallbacks(_onStockForceChangeCallbacks, stockName, oldStock, forcedStock, 0)
-					_logEvent("forced_stock_applied", stockName, {forcedStock = forcedStock})
-					_performanceMetrics.stockUpdates += 1
+			local forcedData = _getForcedData(dataName)
+			if forcedData then
+				if datasDifferent(dataItem._currentData, forcedData) then
+					local oldData = dataItem._currentData
+					dataItem._currentData = forcedData
+					_callCallbacks(_onDataForceChangeCallbacks, dataName, oldData, forcedData, 0)
+					_logEvent("forced_data_applied", dataName, {forcedData = forcedData})
+					_performanceMetrics.dataUpdates += 1
 				end
 			else
-				local newStock = GlobalDataService.GetCurrentStock(stockName) or {}
-				if stocksDifferent(stockData._currentStock, newStock) then
-					local oldStock = stockData._currentStock
-					stockData._currentStock = newStock
-					_callCallbacks(_onStockChangedCallbacks, stockName, oldStock, newStock, os.time())
-					_logEvent("stock_updated", stockName, {oldStock = oldStock, newStock = newStock})
-					_performanceMetrics.stockUpdates += 1
+				local newData = GlobalDataService.GetCurrentData(dataName) or {}
+				if datasDifferent(dataItem._currentData, newData) then
+					local oldData = dataItem._currentData
+					dataItem._currentData = newData
+					_callCallbacks(_onDataChangedCallbacks, dataName, oldData, newData, os.time())
+					_logEvent("data_updated", dataName, {oldData = oldData, newData = newData})
+					_performanceMetrics.dataUpdates += 1
 				end
 			end
 		end
 		
 		-- Smart polling based on restock timing
-		local pollInterval = _calculateNextPollingInterval(stockData, now)
+		local pollInterval = _calculateNextPollingInterval(dataItem, now)
 		task.wait(pollInterval)
 	end
 	
-	_performanceMetrics.activeStocks -= 1
+	_performanceMetrics.activeDatas -= 1
 end
 
 --// Health check and monitoring
@@ -608,20 +608,20 @@ local function _performHealthCheck()
 	
 	-- Log performance metrics
 	if _debug then
-		_log("info", string.format("Health Check - Active Stocks: %d, Updates: %d, Callback Errors: %d", 
-			_performanceMetrics.activeStocks, 
-			_performanceMetrics.stockUpdates, 
+		_log("info", string.format("Health Check - Active Datas: %d, Updates: %d, Callback Errors: %d", 
+			_performanceMetrics.activeDatas, 
+			_performanceMetrics.dataUpdates, 
 			_performanceMetrics.callbackErrors), false)
 	end
 end
 
 --// Validation functions
-local function _validateStockItems(stockItems)
-	if type(stockItems) ~= "table" then
-		return false, "stockItems must be a table"
+local function _validateDataItems(dataItems)
+	if type(dataItems) ~= "table" then
+		return false, "dataItems must be a table"
 	end
 	
-	for i, item in ipairs(stockItems) do
+	for i, item in ipairs(dataItems) do
 		if type(item) ~= "table" then
 			return false, "Item " .. i .. " must be a table"
 		end
@@ -653,29 +653,29 @@ end
 --// Public API
 
 --[[
-	Creates and registers a new global stock configuration
+	Creates and registers a new global data configuration
 	
-	@param stockName string Unique name of the stock
-	@param stockItems table List of items with chance, minAmount, maxAmount
+	@param dataName string Unique name of the data
+	@param dataItems table List of items with chance, minAmount, maxAmount
 	@param minItems number Minimum items to pick
 	@param maxItems number Maximum items to pick
-	@param restockInterval number Interval in seconds for stock refresh
-	@param stockType string Optional stock type
+	@param restockInterval number Interval in seconds for data refresh
+	@param dataType string Optional data type
 	@param Info table Optional info for date/day restrictions
-	@return table stockData or nil, string error
+	@return table dataItem or nil, string error
 ]]
-function GlobalDataService.CreateStock(stockName, stockItems, minItems, maxItems, restockInterval, stockType, Info)
+function GlobalDataService.CreateData(dataName, dataItems, minItems, maxItems, restockInterval, dataType, Info)
 	-- Input validation
-	if type(stockName) ~= "string" or stockName == "" then
-		return nil, "stockName must be a non-empty string"
+	if type(dataName) ~= "string" or dataName == "" then
+		return nil, "dataName must be a non-empty string"
 	end
 	
-	if type(stockItems) ~= "table" or #stockItems == 0 then
-		return nil, "stockItems must be a non-empty table"
+	if type(dataItems) ~= "table" or #dataItems == 0 then
+		return nil, "dataItems must be a non-empty table"
 	end
 	
-	-- Validate stock items
-	local isValid, errorMsg = _validateStockItems(stockItems)
+	-- Validate data items
+	local isValid, errorMsg = _validateDataItems(dataItems)
 	if not isValid then
 		return nil, errorMsg
 	end
@@ -683,7 +683,7 @@ function GlobalDataService.CreateStock(stockName, stockItems, minItems, maxItems
 	minItems = tonumber(minItems) or 1
 	maxItems = tonumber(maxItems) or minItems
 	restockInterval = tonumber(restockInterval) or 50
-	stockType = stockType or "Normal"
+	dataType = dataType or "Normal"
 	
 	if minItems < 1 then
 		return nil, "minItems must be >= 1"
@@ -697,8 +697,8 @@ function GlobalDataService.CreateStock(stockName, stockItems, minItems, maxItems
 		return nil, "restockInterval must be >= 1"
 	end
 	
-	if stocks[stockName] then
-		_log("warn", "Stock '"..stockName.."' already exists. Overwriting.", true)
+	if datas[dataName] then
+		_log("warn", "Data '"..dataName.."' already exists. Overwriting.", true)
 	end
 	
 	local globalKey = _ensureGlobalKeyAsync()
@@ -709,195 +709,195 @@ function GlobalDataService.CreateStock(stockName, stockItems, minItems, maxItems
 		end)
 	end
 	
-	local stockData = {
-		stockItems = stockItems,
+	local dataItem = {
+		dataItems = dataItems,
 		minItems = minItems,
 		maxItems = maxItems,
 		RESTOCK_INTERVAL = restockInterval,
 		globalKey = globalKey,
-		_currentStock = {},
+		_currentData = {},
 		_running = true,
-		_type = string.lower(stockType),
-		_stockName = stockName,
+		_type = string.lower(dataType),
+		_dataName = dataName,
 		_created = os.time()
 	}
 	
-	if stockType:lower() == "datelimited" or stockType:lower() == "dayofweeklimited" then
+	if dataType:lower() == "datelimited" or dataType:lower() == "dayofweeklimited" then
 		-- DateLimited setup (Info.start / Info.end with {year,month,day})
 		if Info and Info.start and Info["end"] then
-			stockData.dateStart = convertToTime(Info.start)
-			stockData.dateEnd   = convertToTime(Info["end"])
+			dataItem.dateStart = convertToTime(Info.start)
+			dataItem.dateEnd   = convertToTime(Info["end"])
 		end
 		
 		-- DayOfWeekLimited setup (Info.days = {"Monday", "Friday"})
 		if Info and Info.days then
-			stockData.allowedDays = {}
+			dataItem.allowedDays = {}
 			for _, d in ipairs(Info.days) do
 				local dayId = normalizeDayInput(d)
-				stockData.allowedDays[dayId] = true
+				dataItem.allowedDays[dayId] = true
 			end
 		end
 	end
 	
-	stocks[stockName] = stockData
+	datas[dataName] = dataItem
 	task.spawn(function()
-		_stockThread(stockName)
+		_dataThread(dataName)
 	end)
 	
-	_logEvent("stock_created", stockName, {config = stockData})
-	return stockData
+	_logEvent("data_created", dataName, {config = dataItem})
+	return dataItem
 end
 
 --[[
-	Gets the current stock list for a stock name
+	Gets the current data list for a data name
 	
-	@param stockName string
+	@param dataName string
 	@return table
 ]]
-function GlobalDataService.GetCurrentStock(stockName)
-	local stockData = stocks[stockName]
-	if not stockData then return {} end
+function GlobalDataService.GetCurrentData(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then return {} end
 	
 	local anchor = getGlobalAnchor()
-	local restockTime = computeDeterministicBoundary(anchor, stockName, stockData.RESTOCK_INTERVAL)
+	local restockTime = computeDeterministicBoundary(anchor, dataName, dataItem.RESTOCK_INTERVAL)
 	
-	local predictedStock = _predictStock(stockData, restockTime)
-	return predictedStock
+	local predictedData = _predictData(dataItem, restockTime)
+	return predictedData
 end
 
 --[[
-	Gets the deterministic restock boundary and offset for a stock
+	Gets the deterministic restock boundary and offset for a data
 	
-	@param stockName string
+	@param dataName string
 	@return currentBoundary, offset
 ]]
-function GlobalDataService.GetDeterministicBoundary(stockName)
-	local stockData = stocks[stockName]
-	if not stockData then
+function GlobalDataService.GetDeterministicBoundary(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then
 		return nil
 	end
-	local globalKey = stockData.globalKey or _ensureGlobalKeyAsync()
+	local globalKey = dataItem.globalKey or _ensureGlobalKeyAsync()
 	if not globalKey then
 		return nil
 	end
-	local interval = stockData.RESTOCK_INTERVAL or 100
-	return computeDeterministicBoundary(globalKey, stockName, interval)
+	local interval = dataItem.RESTOCK_INTERVAL or 100
+	return computeDeterministicBoundary(globalKey, dataName, interval)
 end
 
 --[[
-	Forces the next stock to be a specific list for a given number of restocks
+	Forces the next data to be a specific list for a given number of restocks
 	
-	@param stockName string
-	@param stockList table The stock items list to force
-	@param restocks number Number of restocks before forced stock expires
+	@param dataName string
+	@param dataList table The data items list to force
+	@param restocks number Number of restocks before forced data expires
 	@return boolean success
 ]]
-function GlobalDataService.ForceNextStock(stockName, stockList, restocks)
-	assert(type(stockName) == "string", "stockName must be string")
-	assert(type(stockList) == "table", "stockList must be table")
+function GlobalDataService.ForceNextData(dataName, dataList, restocks)
+	assert(type(dataName) == "string", "dataName must be string")
+	assert(type(dataList) == "table", "dataList must be table")
 	
 	restocks = tonumber(restocks) or 1
 	
-	local stockData = stocks[stockName]
-	if not stockData then
-		_log("warn", "ForceNextStock failed: Stock '"..stockName.."' does not exist", true)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "ForceNextData failed: Data '"..dataName.."' does not exist", true)
 		return false
 	end
 	
-	-- Validate forced stock list
-	local isValid, errorMsg = _validateStockItems(stockList)
+	-- Validate forced data list
+	local isValid, errorMsg = _validateDataItems(dataList)
 	if not isValid then
-		_log("warn", "ForceNextStock failed: " .. errorMsg, true)
+		_log("warn", "ForceNextData failed: " .. errorMsg, true)
 		return false
 	end
 	
-	_saveForcedStockToMemoryStore(stockName, stockList, restocks)
+	_saveForcedDataToMemoryStore(dataName, dataList, restocks)
 	
-	local oldStock = stockData._currentStock
-	stockData._currentStock = stockList
-	_callCallbacks(_onStockForceChangeCallbacks, stockName, oldStock, stockList, 0)
+	local oldData = dataItem._currentData
+	dataItem._currentData = dataList
+	_callCallbacks(_onDataForceChangeCallbacks, dataName, oldData, dataList, 0)
 	
-	_logEvent("forced_stock_set", stockName, {forcedStock = stockList, restocks = restocks})
-	_log("info", "Forced stock set for '"..stockName.."' with expiration in "..tostring(restocks).." restocks", false)
+	_logEvent("forced_data_set", dataName, {forcedData = dataList, restocks = restocks})
+	_log("info", "Forced data set for '"..dataName.."' with expiration in "..tostring(restocks).." restocks", false)
 	return true
 end
 
 --[[
-	Clears forced stock override for a stock name
+	Clears forced data override for a data name
 	
-	@param stockName string
+	@param dataName string
 	@return boolean success
 ]]
-function GlobalDataService.ClearForcedStock(stockName)
-	assert(type(stockName) == "string", "stockName must be string")
+function GlobalDataService.ClearForcedData(dataName)
+	assert(type(dataName) == "string", "dataName must be string")
 	
-	local stockData = stocks[stockName]
-	if not stockData then
+	local dataItem = datas[dataName]
+	if not dataItem then
 		return false
 	end
 	
-	_clearForcedStockInMemoryStore(stockName)
-	_logEvent("forced_stock_cleared", stockName, {})
-	_log("info", "Forced stock cleared for '"..stockName.."'", false)
+	_clearForcedDataInMemoryStore(dataName)
+	_logEvent("forced_data_cleared", dataName, {})
+	_log("info", "Forced data cleared for '"..dataName.."'", false)
 	return true
 end
 
 --[[
-	Subscribe to stock changed events (normal stock changes)
+	Subscribe to data changed events (normal data changes)
 	
-	@param callback function(stockName, oldStock, newStock, restockTime)
+	@param callback function(dataName, oldData, newData, restockTime)
 	@return function unsubscribe function
 ]]
-function GlobalDataService.OnStockChanged(callback)
+function GlobalDataService.OnDataChanged(callback)
 	assert(type(callback) == "function", "callback must be function")
 	
-	local callbackId = #_onStockChangedCallbacks + 1
-	_onStockChangedCallbacks[callbackId] = callback
+	local callbackId = #_onDataChangedCallbacks + 1
+	_onDataChangedCallbacks[callbackId] = callback
 	
 	-- Return unsubscribe function
 	return function()
-		if _onStockChangedCallbacks[callbackId] == callback then
-			_onStockChangedCallbacks[callbackId] = nil
+		if _onDataChangedCallbacks[callbackId] == callback then
+			_onDataChangedCallbacks[callbackId] = nil
 		end
 	end
 end
 
 --[[
-	Subscribe to forced stock changed events
+	Subscribe to forced data changed events
 	
-	@param callback function(stockName, oldStock, newStock, timer)
+	@param callback function(dataName, oldData, newData, timer)
 	@return function unsubscribe function
 ]]
-function GlobalDataService.OnStockForceChanged(callback)
+function GlobalDataService.OnDataForceChanged(callback)
 	assert(type(callback) == "function", "callback must be function")
 	
-	local callbackId = #_onStockForceChangeCallbacks + 1
-	_onStockForceChangeCallbacks[callbackId] = callback
+	local callbackId = #_onDataForceChangeCallbacks + 1
+	_onDataForceChangeCallbacks[callbackId] = callback
 	
 	-- Return unsubscribe function
 	return function()
-		if _onStockForceChangeCallbacks[callbackId] == callback then
-			_onStockForceChangeCallbacks[callbackId] = nil
+		if _onDataForceChangeCallbacks[callbackId] == callback then
+			_onDataForceChangeCallbacks[callbackId] = nil
 		end
 	end
 end
 
 --[[
-	Subscribe to forced stock expiration events
+	Subscribe to forced data expiration events
 	
-	@param callback function(stockName)
+	@param callback function(dataName)
 	@return function unsubscribe function
 ]]
-function GlobalDataService.OnForcedStockExpired(callback)
+function GlobalDataService.OnForcedDataExpired(callback)
 	assert(type(callback) == "function", "callback must be function")
 	
-	local callbackId = #_onForcedStockExpiredCallbacks + 1
-	_onForcedStockExpiredCallbacks[callbackId] = callback
+	local callbackId = #_onForcedDataExpiredCallbacks + 1
+	_onForcedDataExpiredCallbacks[callbackId] = callback
 	
 	-- Return unsubscribe function
 	return function()
-		if _onForcedStockExpiredCallbacks[callbackId] == callback then
-			_onForcedStockExpiredCallbacks[callbackId] = nil
+		if _onForcedDataExpiredCallbacks[callbackId] == callback then
+			_onForcedDataExpiredCallbacks[callbackId] = nil
 		end
 	end
 end
@@ -912,8 +912,8 @@ function GlobalDataService.ForceRotateGlobalKey()
 	
 	if newKey then
 		_cachedGlobalKey = newKey
-		for name, stockData in pairs(stocks) do
-			stockData.globalKey = newKey
+		for name, dataItem in pairs(datas) do
+			dataItem.globalKey = newKey
 		end
 		_logEvent("global_key_rotated", "system", {newKey = newKey})
 		return true, newKey
@@ -923,38 +923,38 @@ function GlobalDataService.ForceRotateGlobalKey()
 end
 
 --[[
-	Stops a stock update loop cleanly
+	Stops a data update loop cleanly
 	
-	@param stockName string
+	@param dataName string
 	@return boolean success
 ]]
-function GlobalDataService.StopStock(stockName)
-	local stockData = stocks[stockName]
-	if stockData then
-		stockData._running = false
-		_logEvent("stock_stopped", stockName, {})
+function GlobalDataService.StopData(dataName)
+	local dataItem = datas[dataName]
+	if dataItem then
+		dataItem._running = false
+		_logEvent("data_stopped", dataName, {})
 		return true
 	end
 	return false
 end
 
 --[[
-	Stops all stocks and cleans up resources
+	Stops all datas and cleans up resources
 	
 	@return boolean success
 ]]
-function GlobalDataService.StopAllStocks()
-	for stockName, stockData in pairs(stocks) do
-		stockData._running = false
+function GlobalDataService.StopAllDatas()
+	for dataName, dataItem in pairs(datas) do
+		dataItem._running = false
 	end
 	
 	-- Clear all callbacks
-	_onStockChangedCallbacks = {}
-	_onStockForceChangeCallbacks = {}
-	_onForcedStockExpiredCallbacks = {}
+	_onDataChangedCallbacks = {}
+	_onDataForceChangeCallbacks = {}
+	_onForcedDataExpiredCallbacks = {}
 	
-	_logEvent("all_stocks_stopped", "system", {})
-	_log("info", "All stocks stopped and callbacks cleared", true)
+	_logEvent("all_datas_stopped", "system", {})
+	_log("info", "All datas stopped and callbacks cleared", true)
 	return true
 end
 
@@ -983,9 +983,9 @@ end
 ]]
 function GlobalDataService.GetPerformanceMetrics()
 	return {
-		activeStocks = _performanceMetrics.activeStocks,
-		totalStocks = #stocks,
-		stockUpdates = _performanceMetrics.stockUpdates,
+		activeDatas = _performanceMetrics.activeDatas,
+		totalDatas = #datas,
+		dataUpdates = _performanceMetrics.dataUpdates,
 		callbackErrors = _performanceMetrics.callbackErrors,
 		lastHealthCheck = _performanceMetrics.lastHealthCheck,
 		globalKeyStatus = _cachedGlobalKey and "healthy" or "unhealthy",
@@ -1014,7 +1014,7 @@ function GlobalDataService.GetEventHistory(limit)
 end
 
 --[[
-	Bulk operations for managing multiple stocks
+	Bulk operations for managing multiple datas
 	
 	@param operations table List of operations to perform
 	@return table results
@@ -1030,25 +1030,25 @@ function GlobalDataService.BulkOperation(operations)
 		local success, result, errorMsg
 		
 		if operation.action == "create" then
-			success, result = GlobalDataService.CreateStock(
-				operation.stockName,
-				operation.stockItems,
+			success, result = GlobalDataService.CreateData(
+				operation.dataName,
+				operation.dataItems,
 				operation.minItems,
 				operation.maxItems,
 				operation.restockInterval,
-				operation.stockType,
+				operation.dataType,
 				operation.info
 			)
 			if not success then
 				errorMsg = result
 			end
 		elseif operation.action == "stop" then
-			success = GlobalDataService.StopStock(operation.stockName)
+			success = GlobalDataService.StopData(operation.dataName)
 			result = success
 		elseif operation.action == "force" then
-			success = GlobalDataService.ForceNextStock(
-				operation.stockName,
-				operation.stockList,
+			success = GlobalDataService.ForceNextData(
+				operation.dataName,
+				operation.dataList,
 				operation.restocks
 			)
 			result = success
@@ -1059,7 +1059,7 @@ function GlobalDataService.BulkOperation(operations)
 		
 		results[i] = {
 			action = operation.action,
-			stockName = operation.stockName,
+			dataName = operation.dataName,
 			success = success,
 			result = result,
 			error = errorMsg
@@ -1070,20 +1070,20 @@ function GlobalDataService.BulkOperation(operations)
 end
 
 --[[
-	Validates a stock configuration without creating it
+	Validates a data configuration without creating it
 	
-	@param stockItems table
+	@param dataItems table
 	@param minItems number
 	@param maxItems number
 	@param restockInterval number
 	@return boolean isValid, string errorMessage
 ]]
-function GlobalDataService.ValidateStockConfig(stockItems, minItems, maxItems, restockInterval)
-	if type(stockItems) ~= "table" or #stockItems == 0 then
-		return false, "stockItems must be a non-empty table"
+function GlobalDataService.ValidateDataConfig(dataItems, minItems, maxItems, restockInterval)
+	if type(dataItems) ~= "table" or #dataItems == 0 then
+		return false, "dataItems must be a non-empty table"
 	end
 	
-	local isValid, errorMsg = _validateStockItems(stockItems)
+	local isValid, errorMsg = _validateDataItems(dataItems)
 	if not isValid then
 		return false, errorMsg
 	end
@@ -1108,41 +1108,41 @@ function GlobalDataService.ValidateStockConfig(stockItems, minItems, maxItems, r
 end
 
 --[[
-	Gets information about a specific stock
+	Gets information about a specific data
 	
-	@param stockName string
-	@return table stockInfo or nil
+	@param dataName string
+	@return table dataInfo or nil
 ]]
-function GlobalDataService.GetStockInfo(stockName)
-	local stockData = stocks[stockName]
-	if not stockData then
+function GlobalDataService.GetDataInfo(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then
 		return nil
 	end
 	
 	return {
-		name = stockName,
-		type = stockData._type,
-		restockInterval = stockData.RESTOCK_INTERVAL,
-		minItems = stockData.minItems,
-		maxItems = stockData.maxItems,
-		currentStock = stockData._currentStock,
-		created = stockData._created,
-		running = stockData._running,
-		allowedDays = stockData.allowedDays,
-		dateStart = stockData.dateStart,
-		dateEnd = stockData.dateEnd
+		name = dataName,
+		type = dataItem._type,
+		restockInterval = dataItem.RESTOCK_INTERVAL,
+		minItems = dataItem.minItems,
+		maxItems = dataItem.maxItems,
+		currentData = dataItem._currentData,
+		created = dataItem._created,
+		running = dataItem._running,
+		allowedDays = dataItem.allowedDays,
+		dateStart = dataItem.dateStart,
+		dateEnd = dataItem.dateEnd
 	}
 end
 
 --[[
-	Gets a list of all registered stock names
+	Gets a list of all registered data names
 	
-	@return table stockNames
+	@return table dataNames
 ]]
-function GlobalDataService.GetAllStockNames()
+function GlobalDataService.GetAllDataNames()
 	local names = {}
-	for stockName, _ in pairs(stocks) do
-		table.insert(names, stockName)
+	for dataName, _ in pairs(datas) do
+		table.insert(names, dataName)
 	end
 	return names
 end
