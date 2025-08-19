@@ -1,64 +1,64 @@
 # GlobalDataService
 
-A Roblox module for managing global stock across servers using DataStoreService and MemoryStoreService. Supports forced stock overrides, automatic restocking, random stock prediction based on a global key, callbacks for stock changes, and advanced stock types with date/time restrictions.
+A Roblox module for managing global data across servers using DataStoreService and MemoryStoreService. Supports forced data overrides, automatic refreshing, random data prediction based on a global key, callbacks for data changes, and advanced data types with date/time restrictions.
 
 ---
 
 ## Features
 
-- Global stock generation with a shared global key
-- Automatic periodic restocking with configurable intervals
-- Forced stock overrides with expiration via MemoryStoreService
-- Callbacks for stock changes and forced stock updates
+- Global data generation with a shared global key
+- Automatic periodic refreshing with configurable intervals
+- Forced data overrides with expiration via MemoryStoreService
+- Callbacks for data changes and forced data updates
 - Safe update retries and key rotation support
 - Debug logging and version update notifications
-- Day-of-week and date range restrictions for stock availability
+- Day-of-week and date range restrictions for data availability
 - Performance monitoring and health checks
-- Bulk operations for managing multiple stocks
-- Stock validation and configuration management
+- Bulk operations for managing multiple data sets
+- Data validation and configuration management
 - Event history tracking for debugging
-- Smart polling intervals based on restock timing
-- Deterministic stock generation across servers
+- Smart polling intervals based on refresh timing
+- Deterministic data generation across servers
 
 ---
 
-## Update logs, Version "v1.1.5"
+## Update logs
 - Performance monitoring and health checks
-- Bulk operations for managing multiple stocks
-- Stock validation and configuration management
+- Bulk operations for managing multiple data sets
+- Data validation and configuration management
 - Event history tracking for debugging
-- Smart polling intervals based on restock timing
+- Smart polling intervals based on refresh timing
 - Enhanced error handling and callback management
-- Stock types (current types: "normal", "datelimited", "dayofweeklimited")
+- Data types (current types: "normal", "datelimited", "dayofweeklimited")
 - Date range restrictions
 - Day-of-week restrictions
 
 ## Example usage:
 ```lua
-local GlobalStockService = require(path.to.GlobalStockService)
+local GlobalDataService = require(path.to.GlobalDataService)
 
---// Example 1: Normal Stock
-GlobalStockService.CreateStock(
-	"NormalStock", -- stock name
+--// Example 1: Normal Data
+GlobalDataService.CreateData(
+	"NormalData", -- data name
 	{
 		{name = "Apple", chance = 80, minAmount = 1, maxAmount = 5},
 		{name = "Banana", chance = 50, minAmount = 1, maxAmount = 3},
 	}, -- items
 	1, -- minItems
 	2, -- maxItems
-	60 -- restockInterval in seconds
+	60 -- refreshInterval in seconds
 )
 
---// Example 2: DateLimited Stock
-GlobalStockService.CreateStock(
-	"HolidayStock",
+--// Example 2: DateLimited Data
+GlobalDataService.CreateData(
+	"HolidayData",
 	{
 		{name = "CandyCane", chance = 100, minAmount = 1, maxAmount = 2},
 		{name = "GiftBox", chance = 60, minAmount = 1, maxAmount = 1},
 	},
 	1, -- minItems
 	2, -- maxItems
-	200, -- restockInterval
+	200, -- refreshInterval
 	"DateLimited", -- type
 	{
 		start = {year = 2025, month = 12, day = 23},
@@ -66,27 +66,27 @@ GlobalStockService.CreateStock(
 	} -- date range
 )
 
---// Example 3: DayOfWeekLimited Stock
-GlobalStockService.CreateStock(
-	"WeekendStock",
+--// Example 3: DayOfWeekLimited Data
+GlobalDataService.CreateData(
+	"WeekendData",
 	{
 		{name = "Chocolate", chance = 90, minAmount = 1, maxAmount = 4},
 		{name = "Juice", chance = 70, minAmount = 1, maxAmount = 2},
 	},
 	1, -- minItems
 	2, -- maxItems
-	5, -- restockInterval
+	5, -- refreshInterval
 	"DayOfWeekLimited", -- type
 	{
 		days = {"Thursday", "Sunday"}
 	} -- days of the week
 )
 
--- Callback to see when stocks change
-GlobalStockService.OnStockChanged(function(stockName, oldStock, newStock, time)
-	print("Stock changed:", stockName)
-	print("Old stock:", oldStock)
-	print("New stock:", newStock)
+-- Callback to see when data changes
+GlobalDataService.OnDataChanged(function(dataName, oldData, newData, time)
+	print("Data changed:", dataName)
+	print("Old data:", oldData)
+	print("New data:", newData)
 	print("Time:", time)
 end)
 ```
@@ -95,66 +95,66 @@ end)
 
 ## Installation
 
-1. Copy `GlobalStockService.lua` into your Roblox project (ideally in `ServerScriptService`).
+1. Copy `GlobalDataService.lua` into your Roblox project (ideally in `ServerScriptService`).
 2. Require it in your script:
 ```lua
-local GlobalStockService = require(path.to.GlobalStockService)
+local GlobalDataService = require(path.to.GlobalDataService)
 ```
 
 ## Basic Usage
-### Create a stock configuration and start its update loop:
+### Create a data configuration and start its update loop:
 ```lua
-local stockItems = {
+local dataItems = {
     {name = "ItemA", chance = 50, minAmount = 1, maxAmount = 3},
     {name = "ItemB", chance = 30, minAmount = 2, maxAmount = 5},
     {name = "ItemC", chance = 80, minAmount = 1, maxAmount = 1},
 }
 
-local myStock = GlobalStockService.CreateStock("MyShopStock", stockItems, 1, 3, 600)
+local myData = GlobalDataService.CreateData("MyShopData", dataItems, 1, 3, 600)
 
-local currentStock = GlobalStockService.GetCurrentStock("MyShopStock")
-for _, item in ipairs(currentStock) do
+local currentData = GlobalDataService.GetCurrentData("MyShopData")
+for _, item in ipairs(currentData) do
     print(item.name, item.amount)
 end
 ```
 
-## Forced Stock Overrides
-### Force the next stock to a specific list for a defined number of restocks:
+## Forced Data Overrides
+### Force the next data to a specific list for a defined number of refreshes:
 ```lua
-local forcedStock = {
+local forcedData = {
     {name = "SpecialItem", amount = 10}
 }
 
-GlobalStockService.ForceNextStock("MyShopStock", forcedStock, 2)
+GlobalDataService.ForceNextData("MyShopData", forcedData, 2)
 
--- Clear forced stock override:
-GlobalStockService.ClearForcedStock("MyShopStock")
+-- Clear forced data override:
+GlobalDataService.ClearForcedData("MyShopData")
 ```
 
 ## Event Callbacks
-### Subscribe to stock change events:
+### Subscribe to data change events:
 ```lua
-GlobalStockService.OnStockChanged(function(stockName, oldStock, newStock, restockTime)
-    print("Stock changed for", stockName)
+GlobalDataService.OnDataChanged(function(dataName, oldData, newData, refreshTime)
+    print("Data changed for", dataName)
 end)
 ```
-### Subscribe to forced stock change events:
+### Subscribe to forced data change events:
 ```lua
-GlobalStockService.OnStockForceChanged(function(stockName, oldStock, newStock, timer)
-    print("Forced stock changed for", stockName)
+GlobalDataService.OnDataForceChanged(function(dataName, oldData, newData, timer)
+    print("Forced data changed for", dataName)
 end)
 ```
-### Subscribe to forced stock expiration events:
+### Subscribe to forced data expiration events:
 ```lua
-GlobalStockService.OnForcedStockExpired(function(stockName)
-    print("Forced stock expired for", stockName)
+GlobalDataService.OnForcedDataExpired(function(dataName)
+    print("Forced data expired for", dataName)
 end)
 ```
 
 ## Advanced Usage
 ### Rotate the global key manually
 ```lua
-local success, newKeyOrError = GlobalStockService.ForceRotateGlobalKey()
+local success, newKeyOrError = GlobalDataService.ForceRotateGlobalKey()
 if success then
     print("Global key rotated successfully")
 else
@@ -164,60 +164,60 @@ end
 
 ### Enable or disable debug logging
 ```lua
-GlobalStockService.SetDebug(true) -- Enable debug logs
-GlobalStockService.SetDebug(false) -- Disable debug logs
+GlobalDataService.SetDebug(true) -- Enable debug logs
+GlobalDataService.SetDebug(false) -- Disable debug logs
 ```
 
 ### Get performance metrics and health information
 ```lua
-local metrics = GlobalStockService.GetPerformanceMetrics()
-print("Active stocks:", metrics.activeStocks)
-print("Total stocks:", metrics.totalStocks)
-print("Stock updates:", metrics.stockUpdates)
+local metrics = GlobalDataService.GetPerformanceMetrics()
+print("Active data sets:", metrics.activeDataSets)
+print("Total data sets:", metrics.totalDataSets)
+print("Data updates:", metrics.dataUpdates)
 print("Global key status:", metrics.globalKeyStatus)
 print("Version:", metrics.version)
 ```
 
 ### Get event history for debugging
 ```lua
-local events = GlobalStockService.GetEventHistory(10) -- Get last 10 events
+local events = GlobalDataService.GetEventHistory(10) -- Get last 10 events
 for _, event in ipairs(events) do
-    print(event.timestamp, event.type, event.stockName)
+    print(event.timestamp, event.type, event.dataName)
 end
 ```
 
-### Bulk operations for managing multiple stocks
+### Bulk operations for managing multiple data sets
 ```lua
 local operations = {
     {
         action = "create",
-        stockName = "Stock1",
-        stockItems = {{name = "Item1", chance = 100, minAmount = 1, maxAmount = 1}},
+        dataName = "Data1",
+        dataItems = {{name = "Item1", chance = 100, minAmount = 1, maxAmount = 1}},
         minItems = 1,
         maxItems = 1,
-        restockInterval = 60
+        refreshInterval = 60
     },
     {
         action = "force",
-        stockName = "Stock2",
-        stockList = {{name = "SpecialItem", amount = 5}},
-        restocks = 2
+        dataName = "Data2",
+        dataList = {{name = "SpecialItem", amount = 5}},
+        refreshes = 2
     },
     {
         action = "stop",
-        stockName = "Stock3"
+        dataName = "Data3"
     }
 }
 
-local results = GlobalStockService.BulkOperation(operations)
+local results = GlobalDataService.BulkOperation(operations)
 for _, result in ipairs(results) do
-    print(result.action, result.stockName, result.success)
+    print(result.action, result.dataName, result.success)
 end
 ```
 
-### Validate stock configuration without creating it
+### Validate data configuration without creating it
 ```lua
-local isValid, errorMsg = GlobalStockService.ValidateStockConfig(
+local isValid, errorMsg = GlobalDataService.ValidateDataConfig(
     {{name = "Item1", chance = 100, minAmount = 1, maxAmount = 1}},
     1, 1, 60
 )
@@ -228,76 +228,76 @@ else
 end
 ```
 
-### Get information about a specific stock
+### Get information about a specific data set
 ```lua
-local stockInfo = GlobalStockService.GetStockInfo("MyShopStock")
-if stockInfo then
-    print("Stock type:", stockInfo.type)
-    print("Restock interval:", stockInfo.restockInterval)
-    print("Running:", stockInfo.running)
-    print("Created:", stockInfo.created)
+local dataInfo = GlobalDataService.GetDataInfo("MyShopData")
+if dataInfo then
+    print("Data type:", dataInfo.type)
+    print("Refresh interval:", dataInfo.refreshInterval)
+    print("Running:", dataInfo.running)
+    print("Created:", dataInfo.created)
 end
 ```
 
-### Get all registered stock names
+### Get all registered data names
 ```lua
-local stockNames = GlobalStockService.GetAllStockNames()
-for _, name in ipairs(stockNames) do
-    print("Stock:", name)
+local dataNames = GlobalDataService.GetAllDataNames()
+for _, name in ipairs(dataNames) do
+    print("Data:", name)
 end
 ```
 
-### Get deterministic boundary for a stock
+### Get deterministic boundary for a data set
 ```lua
-local boundary = GlobalStockService.GetDeterministicBoundary("MyShopStock")
+local boundary = GlobalDataService.GetDeterministicBoundary("MyShopData")
 if boundary then
-    print("Next restock boundary:", boundary)
+    print("Next refresh boundary:", boundary)
 end
 ```
 
-### Stop a specific stock
+### Stop a specific data set
 ```lua
-GlobalStockService.StopStock("MyShopStock")
+GlobalDataService.StopData("MyShopData")
 ```
 
-### Stop all stocks and clean up
+### Stop all data sets and clean up
 ```lua
-GlobalStockService.StopAllStocks()
+GlobalDataService.StopAllData()
 ```
 
 ## API Overview
 
 ### Core Functions
-- `CreateStock(name, items, min, max, interval, type, info)` - Create and start a new stock configuration
-- `GetCurrentStock(name)` - Get current stock for a stock name
-- `ForceNextStock(name, list, restocks)` - Force next stock list for a given number of restocks
-- `ClearForcedStock(name)` - Clear forced stock override
-- `StopStock(name)` - Stop the stock update loop for a stock
-- `StopAllStocks()` - Stop all stocks and clean up resources
+- `CreateData(name, items, min, max, interval, type, info)` - Create and start a new data configuration
+- `GetCurrentData(name)` - Get current data for a data name
+- `ForceNextData(name, list, refreshes)` - Force next data list for a given number of refreshes
+- `ClearForcedData(name)` - Clear forced data override
+- `StopData(name)` - Stop the data update loop for a data set
+- `StopAllData()` - Stop all data sets and clean up resources
 
 ### Event Callbacks
-- `OnStockChanged(callback)` - Subscribe to normal stock change events
-- `OnStockForceChanged(callback)` - Subscribe to forced stock change events
-- `OnForcedStockExpired(callback)` - Subscribe to forced stock expiration events
+- `OnDataChanged(callback)` - Subscribe to normal data change events
+- `OnDataForceChanged(callback)` - Subscribe to forced data change events
+- `OnForcedDataExpired(callback)` - Subscribe to forced data expiration events
 
 ### Utility Functions
 - `ForceRotateGlobalKey()` - Manually rotate the global key
 - `SetDebug(enabled)` - Enable or disable debug logging
 - `GetPerformanceMetrics()` - Get performance metrics and health information
 - `GetEventHistory(limit)` - Get recent event history for debugging
-- `BulkOperation(operations)` - Perform bulk operations on multiple stocks
-- `ValidateStockConfig(items, min, max, interval)` - Validate stock configuration
-- `GetStockInfo(name)` - Get information about a specific stock
-- `GetAllStockNames()` - Get list of all registered stock names
-- `GetDeterministicBoundary(name)` - Get deterministic restock boundary
+- `BulkOperation(operations)` - Perform bulk operations on multiple data sets
+- `ValidateDataConfig(items, min, max, interval)` - Validate data configuration
+- `GetDataInfo(name)` - Get information about a specific data set
+- `GetAllDataNames()` - Get list of all registered data names
+- `GetDeterministicBoundary(name)` - Get deterministic refresh boundary
 
-## Stock Types
+## Data Types
 
-### Normal Stock
-Default stock type with no time restrictions.
+### Normal Data
+Default data type with no time restrictions.
 
-### DateLimited Stock
-Stock that is only available within a specific date range.
+### DateLimited Data
+Data that is only available within a specific date range.
 ```lua
 {
     start = {year = 2025, month = 12, day = 23},
@@ -305,8 +305,8 @@ Stock that is only available within a specific date range.
 }
 ```
 
-### DayOfWeekLimited Stock
-Stock that is only available on specific days of the week.
+### DayOfWeekLimited Data
+Data that is only available on specific days of the week.
 ```lua
 {
     days = {"Monday", "Friday", "Sunday"}
@@ -315,15 +315,15 @@ Stock that is only available on specific days of the week.
 
 ## Configuration Options
 
-### Stock Items
-Each item in the stock configuration should have:
+### Data Items
+Each item in the data configuration should have:
 - `name` (string) - The name of the item
 - `chance` (number, 0-100) - Probability of the item appearing (optional, defaults to 100)
 - `minAmount` (number) - Minimum amount of the item (optional, defaults to 1)
 - `maxAmount` (number) - Maximum amount of the item (optional, defaults to minAmount)
 
 ### Date Configuration
-For date-limited stocks, use:
+For date-limited data sets, use:
 - `year` (number) - Year
 - `month` (number) - Month (1-12)
 - `day` (number) - Day (1-31)
@@ -343,7 +343,7 @@ The service includes built-in performance monitoring:
 - Automatic health checks every 60 seconds
 - Performance metrics tracking
 - Event history for debugging
-- Smart polling intervals that adjust based on restock timing
+- Smart polling intervals that adjust based on refresh timing
 - Global key health monitoring
 - Callback error tracking and cleanup
 
@@ -352,7 +352,7 @@ The service includes built-in performance monitoring:
 The service includes robust error handling:
 - Automatic retries for DataStore operations
 - Graceful handling of callback errors
-- Fallback mechanisms for stock generation
+- Fallback mechanisms for data generation
 - Validation of all input parameters
 - Comprehensive logging for debugging
 
