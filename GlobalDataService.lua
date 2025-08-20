@@ -19,9 +19,15 @@ local _onForcedDataExpiredCallbacks = {}
 local _KEY_DATASTORE_NAME = "GlobalDataKeyStore"
 local _KEY_DATASTORE_KEY = "GlobalDataKey_v1"
 local _FORCED_DATA_KEY = "ForcedNextData"
+local _BACKUP_DATASTORE_NAME = "GlobalDataBackupStore"
+local _CONFIG_DATASTORE_NAME = "GlobalDataConfigStore"
 local restockAnchorStore = DataStoreService:GetDataStore("GlobalRestockAnchor")
+local backupStore = DataStoreService:GetDataStore(_BACKUP_DATASTORE_NAME)
+local configStore = DataStoreService:GetDataStore(_CONFIG_DATASTORE_NAME)
 local _KEY_LENGTH = 16
 local _MAX_UPDATE_ATTEMPTS = 5
+local _MAX_BACKUP_ATTEMPTS = 3
+local _BACKUP_RETENTION_DAYS = 30
 
 local _SEED_ZERO_FALLBACK = 0xCAFEBABE
 local _SEED_INITIAL_ZERO = 0xDEADBEEF
@@ -36,6 +42,16 @@ local _HEALTH_CHECK_INTERVAL = 60
 local _MAX_CALLBACK_ERRORS = 10
 local _MAX_EVENT_HISTORY = 100
 
+--// Performance optimization constants
+local _CACHE_ENABLED = true
+local _CACHE_TTL = 300 -- 5 minutes
+local _PRELOAD_ENABLED = false
+local _OPTIMIZATION_STRATEGIES = {
+	AGGRESSIVE = "aggressive",
+	BALANCED = "balanced",
+	CONSERVATIVE = "conservative"
+}
+
 local DAY_NAME_TO_ID = {
 	sunday = 1,
 	monday = 2,
@@ -44,6 +60,29 @@ local DAY_NAME_TO_ID = {
 	thursday = 5,
 	friday = 6,
 	saturday = 7
+}
+
+--// Advanced scheduling constants
+local _TIMEZONE_OFFSETS = {
+	UTC = 0,
+	EST = -5,
+	PST = -8,
+	GMT = 0,
+	JST = 9
+}
+
+local _SEASONS = {
+	spring = {start = {month = 3, day = 20}, ["end"] = {month = 6, day = 20}},
+	summer = {start = {month = 6, day = 21}, ["end"] = {month = 9, day = 22}},
+	autumn = {start = {month = 9, day = 23}, ["end"] = {month = 12, day = 20}},
+	winter = {start = {month = 12, day = 21}, ["end"] = {month = 3, day = 19}}
+}
+
+local _HOLIDAYS = {
+	christmas = {month = 12, day = 25},
+	newyear = {month = 1, day = 1},
+	halloween = {month = 10, day = 31},
+	easter = {month = 4, day = 1} -- Simplified, actual Easter calculation is complex
 }
 
 --// Debug config
@@ -551,7 +590,8 @@ local function _dataThread(dataName)
 		local now = os.time()
 		local inDate = _isWithinDateRange(dataItem, now)
 		local inDays = _isDayAllowed(dataItem, now)
-		local inWindow = inDate and inDays
+		local inAdvancedTime = _isWithinAdvancedTimeRestrictions(dataItem, now)
+		local inWindow = inDate and inDays and inAdvancedTime
 		
 		if not inWindow then
 			if dataItem._currentData and #dataItem._currentData > 0 then
@@ -583,8 +623,8 @@ local function _dataThread(dataName)
 			end
 		end
 		
-		-- Smart polling based on restock timing
-		local pollInterval = _calculateNextPollingInterval(dataItem, now)
+		-- Smart polling based on restock timing with optimization
+		local pollInterval = _optimizePollingInterval(dataItem, now)
 		task.wait(pollInterval)
 	end
 	
@@ -648,6 +688,340 @@ local function _validateDataItems(dataItems)
 	end
 	
 	return true
+end
+
+--// Utility helper functions
+local function _getTableKeys(t)
+	local keys = {}
+	for k, _ in pairs(t) do
+		table.insert(keys, k)
+	end
+	return keys
+end
+
+--// Advanced Scheduling and Time Management Functions
+
+local function _isWithinTimeWindow(dataItem, now)
+	if not dataItem.timeWindow then return true end
+	
+	local hour = tonumber(os.date("!%H", now))
+	local startHour = dataItem.timeWindow.startHour or 0
+	local endHour = dataItem.timeWindow.endHour or 23
+	
+	if startHour <= endHour then
+		return hour >= startHour and hour <= endHour
+	else
+		-- Handles cases like 22:00 to 06:00 (overnight)
+		return hour >= startHour or hour <= endHour
+	end
+end
+
+local function _isWithinSeason(dataItem, now)
+	if not dataItem.seasons then return true end
+	
+	local month = tonumber(os.date("!%m", now))
+	local day = tonumber(os.date("!%d", now))
+	
+	for seasonName, _ in pairs(dataItem.seasons) do
+		local season = _SEASONS[seasonName]
+		if season then
+			local startDate = season.start
+			local endDate = season["end"]
+			
+			-- Check if current date falls within season
+			if startDate.month < endDate.month then
+				-- Same year season (e.g., spring)
+				if (month > startDate.month or (month == startDate.month and day >= startDate.day)) and
+				   (month < endDate.month or (month == endDate.month and day <= endDate.day)) then
+					return true
+				end
+			else
+				-- Cross-year season (e.g., winter)
+				if (month > startDate.month or (month == startDate.month and day >= startDate.day)) or
+				   (month < endDate.month or (month == endDate.month and day <= endDate.day)) then
+					return true
+				end
+			end
+		end
+	end
+	
+	return false
+end
+
+local function _isHoliday(dataItem, now)
+	if not dataItem.holidays then return false end
+	
+	local month = tonumber(os.date("!%m", now))
+	local day = tonumber(os.date("!%d", now))
+	
+	for holidayName, _ in pairs(dataItem.holidays) do
+		local holiday = _HOLIDAYS[holidayName]
+		if holiday and holiday.month == month and holiday.day == day then
+			return true
+		end
+	end
+	
+	return false
+end
+
+local function _isWithinCustomSchedule(dataItem, now)
+	if not dataItem.customSchedule then return true end
+	
+	local weekday = tonumber(os.date("!%w", now))
+	local hour = tonumber(os.date("!%H", now))
+	local minute = tonumber(os.date("!%M", now))
+	local currentTime = hour * 60 + minute
+	
+	local daySchedule = dataItem.customSchedule[weekday]
+	if not daySchedule then return false end
+	
+	for _, timeSlot in ipairs(daySchedule) do
+		local startTime = timeSlot.start * 60 -- Convert to minutes
+		local endTime = timeSlot["end"] * 60
+		
+		if currentTime >= startTime and currentTime <= endTime then
+			return true
+		end
+	end
+	
+	return false
+end
+
+local function _convertTimezone(time, timezone)
+	if not timezone or timezone == "UTC" then return time end
+	
+	local offset = _TIMEZONE_OFFSETS[timezone]
+	if not offset then return time end
+	
+	return time + (offset * 3600)
+end
+
+local function _isWithinAdvancedTimeRestrictions(dataItem, now)
+	-- Check all time-based restrictions
+	local inTimeWindow = _isWithinTimeWindow(dataItem, now)
+	local inSeason = _isWithinSeason(dataItem, now)
+	local isHoliday = _isHoliday(dataItem, now)
+	local inCustomSchedule = _isWithinCustomSchedule(dataItem, now)
+	
+	-- Apply holiday exceptions
+	if dataItem.holidayExceptions and isHoliday then
+		return dataItem.holidayExceptions.allowOnHoliday or false
+	end
+	
+	-- All restrictions must pass
+	return inTimeWindow and inSeason and inCustomSchedule
+end
+
+--// Performance Optimization and Cache Management Functions
+
+local _dataCache = {}
+local _cacheTimestamps = {}
+local _optimizationSettings = {
+	strategy = _OPTIMIZATION_STRATEGIES.BALANCED,
+	preloadEnabled = _PRELOAD_ENABLED,
+	cacheEnabled = _CACHE_ENABLED
+}
+
+local function _clearExpiredCache()
+	local currentTime = os.time()
+	local expiredKeys = {}
+	
+	for key, timestamp in pairs(_cacheTimestamps) do
+		if currentTime - timestamp > _CACHE_TTL then
+			expiredKeys[key] = true
+		end
+	end
+	
+	for key, _ in pairs(expiredKeys) do
+		_dataCache[key] = nil
+		_cacheTimestamps[key] = nil
+	end
+	
+	if #_getTableKeys(expiredKeys) > 0 then
+		_log("info", "Cleared "..#_getTableKeys(expiredKeys).." expired cache entries", false)
+	end
+end
+
+local function _getCachedData(dataName)
+	if not _optimizationSettings.cacheEnabled then return nil end
+	
+	_clearExpiredCache()
+	return _dataCache[dataName]
+end
+
+local function _setCachedData(dataName, data)
+	if not _optimizationSettings.cacheEnabled then return end
+	
+	_dataCache[dataName] = data
+	_cacheTimestamps[dataName] = os.time()
+end
+
+local function _preloadData(dataName)
+	if not _optimizationSettings.preloadEnabled then return end
+	
+	local dataItem = datas[dataName]
+	if not dataItem then return end
+	
+	-- Preload the next predicted data
+	local anchor = getGlobalAnchor()
+	local restockTime = computeDeterministicBoundary(anchor, dataName, dataItem.RESTOCK_INTERVAL)
+	local predictedData = _predictData(dataItem, restockTime)
+	
+	_setCachedData(dataName, predictedData)
+	_log("info", "Preloaded data for '"..dataName.."'", false)
+end
+
+local function _optimizePollingInterval(dataItem, currentTime)
+	local strategy = _optimizationSettings.strategy
+	local baseInterval = _calculateNextPollingInterval(dataItem, currentTime)
+	
+	if strategy == _OPTIMIZATION_STRATEGIES.AGGRESSIVE then
+		return math.max(_MIN_POLLING_INTERVAL, baseInterval * 0.7)
+	elseif strategy == _OPTIMIZATION_STRATEGIES.CONSERVATIVE then
+		return math.min(_MAX_POLLING_INTERVAL, baseInterval * 1.3)
+	else
+		return baseInterval -- Balanced strategy
+	end
+end
+
+local function _getPerformanceRecommendations()
+	local recommendations = {}
+	
+	-- Check cache hit rate
+	local totalCacheAccess = 0
+	local cacheHits = 0
+	
+	for dataName, _ in pairs(datas) do
+		if _dataCache[dataName] then
+			cacheHits = cacheHits + 1
+		end
+		totalCacheAccess = totalCacheAccess + 1
+	end
+	
+	local cacheHitRate = totalCacheAccess > 0 and (cacheHits / totalCacheAccess) * 100 or 0
+	
+	if cacheHitRate < 50 then
+		table.insert(recommendations, "Consider enabling preloading for better cache performance")
+	end
+	
+	-- Check polling intervals
+	for dataName, dataItem in pairs(datas) do
+		if dataItem.RESTOCK_INTERVAL < 60 then
+			table.insert(recommendations, "Data '"..dataName.."' has very frequent updates - consider increasing interval")
+		end
+	end
+	
+	-- Check memory usage
+	local memoryUsage = #_dataCache + #_eventHistory
+	if memoryUsage > 1000 then
+		table.insert(recommendations, "High memory usage detected - consider reducing cache TTL or event history")
+	end
+	
+	return recommendations
+end
+
+--// Data Persistence and Backup Functions
+
+local function _serializeDataItem(dataItem)
+	-- Create a serializable version of the data item
+	local serialized = {
+		dataItems = dataItem.dataItems,
+		minItems = dataItem.minItems,
+		maxItems = dataItem.maxItems,
+		RESTOCK_INTERVAL = dataItem.RESTOCK_INTERVAL,
+		_type = dataItem._type,
+		_dataName = dataItem._dataName,
+		_created = dataItem._created,
+		allowedDays = dataItem.allowedDays,
+		dateStart = dataItem.dateStart,
+		dateEnd = dataItem.dateEnd
+	}
+	return serialized
+end
+
+local function _deserializeDataItem(serialized, globalKey)
+	-- Reconstruct a data item from serialized data
+	local dataItem = {
+		dataItems = serialized.dataItems,
+		minItems = serialized.minItems,
+		maxItems = serialized.maxItems,
+		RESTOCK_INTERVAL = serialized.RESTOCK_INTERVAL,
+		globalKey = globalKey,
+		_currentData = {},
+		_running = false, -- Will be set to true when loaded
+		_type = serialized._type,
+		_dataName = serialized._dataName,
+		_created = serialized._created,
+		allowedDays = serialized.allowedDays,
+		dateStart = serialized.dateStart,
+		dateEnd = serialized.dateEnd
+	}
+	return dataItem
+end
+
+local function _saveDataConfig(dataName, dataItem)
+	local success, result = pcall(function()
+		local serialized = _serializeDataItem(dataItem)
+		return configStore:SetAsync(dataName, {
+			config = serialized,
+			lastSaved = os.time(),
+			version = _Version
+		})
+	end)
+	
+	if success then
+		_log("info", "Data config saved for '"..dataName.."'", false)
+		return true
+	else
+		_log("warn", "Failed to save data config for '"..dataName.."': "..tostring(result), true)
+		return false
+	end
+end
+
+local function _loadDataConfig(dataName)
+	local success, result = pcall(function()
+		return configStore:GetAsync(dataName)
+	end)
+	
+	if success and result and result.config then
+		_log("info", "Data config loaded for '"..dataName.."'", false)
+		return result.config
+	else
+		_log("warn", "Failed to load data config for '"..dataName.."'", false)
+		return nil
+	end
+end
+
+local function _createBackup(dataName, dataItem)
+	local backupId = dataName .. "_" .. os.time()
+	local success, result = pcall(function()
+		local serialized = _serializeDataItem(dataItem)
+		return backupStore:SetAsync(backupId, {
+			dataName = dataName,
+			config = serialized,
+			timestamp = os.time(),
+			version = _Version
+		})
+	end)
+	
+	if success then
+		_log("info", "Backup created for '"..dataName.."' with ID: "..backupId, false)
+		return backupId
+	else
+		_log("warn", "Failed to create backup for '"..dataName.."': "..tostring(result), true)
+		return nil
+	end
+end
+
+local function _cleanupOldBackups()
+	local cutoffTime = os.time() - (_BACKUP_RETENTION_DAYS * 24 * 60 * 60)
+	
+	-- This is a simplified cleanup - in production you might want more sophisticated cleanup
+	pcall(function()
+		-- Note: DataStore doesn't support listing all keys, so this is a placeholder
+		-- In practice, you'd need to maintain a list of backup IDs or use a different approach
+		_log("info", "Backup cleanup would run here (cutoff: "..cutoffTime..")", false)
+	end)
 end
 
 --// Public API
@@ -744,6 +1118,9 @@ function GlobalDataService.CreateData(dataName, dataItems, minItems, maxItems, r
 		_dataThread(dataName)
 	end)
 	
+	-- Auto-save configuration
+	_saveDataConfig(dataName, dataItem)
+	
 	_logEvent("data_created", dataName, {config = dataItem})
 	return dataItem
 end
@@ -758,10 +1135,20 @@ function GlobalDataService.GetCurrentData(dataName)
 	local dataItem = datas[dataName]
 	if not dataItem then return {} end
 	
+	-- Check cache first
+	local cachedData = _getCachedData(dataName)
+	if cachedData then
+		return cachedData
+	end
+	
 	local anchor = getGlobalAnchor()
 	local restockTime = computeDeterministicBoundary(anchor, dataName, dataItem.RESTOCK_INTERVAL)
 	
 	local predictedData = _predictData(dataItem, restockTime)
+	
+	-- Cache the result
+	_setCachedData(dataName, predictedData)
+	
 	return predictedData
 end
 
@@ -1145,6 +1532,499 @@ function GlobalDataService.GetAllDataNames()
 		table.insert(names, dataName)
 	end
 	return names
+end
+
+--[[
+	Saves a data configuration to persistent storage
+	
+	@param dataName string Name of the data to save
+	@return boolean success
+]]
+function GlobalDataService.SaveDataConfig(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot save config: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	return _saveDataConfig(dataName, dataItem)
+end
+
+--[[
+	Loads a data configuration from persistent storage
+	
+	@param dataName string Name of the data to load
+	@param startRunning boolean Whether to start the data thread after loading
+	@return boolean success
+]]
+function GlobalDataService.LoadDataConfig(dataName, startRunning)
+	if datas[dataName] then
+		_log("warn", "Cannot load config: Data '"..dataName.."' already exists", true)
+		return false
+	end
+	
+	local config = _loadDataConfig(dataName)
+	if not config then
+		return false
+	end
+	
+	local globalKey = _ensureGlobalKeyAsync()
+	if not globalKey then
+		_log("warn", "Cannot load config: Failed to get global key", true)
+		return false
+	end
+	
+	local dataItem = _deserializeDataItem(config, globalKey)
+	datas[dataName] = dataItem
+	
+	if startRunning then
+		dataItem._running = true
+		task.spawn(function()
+			_dataThread(dataName)
+		end)
+		_log("info", "Data '"..dataName.."' loaded and started", false)
+	else
+		_log("info", "Data '"..dataName.."' loaded (not started)", false)
+	end
+	
+	_logEvent("data_loaded", dataName, {config = dataItem})
+	return true
+end
+
+--[[
+	Creates a backup of a data configuration
+	
+	@param dataName string Name of the data to backup
+	@return string backupId or nil
+]]
+function GlobalDataService.CreateBackup(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot create backup: Data '"..dataName.."' does not exist", true)
+		return nil
+	end
+	
+	local backupId = _createBackup(dataName, dataItem)
+	if backupId then
+		_logEvent("backup_created", dataName, {backupId = backupId})
+	end
+	return backupId
+end
+
+--[[
+	Creates backups of all data configurations
+	
+	@return table backupResults
+]]
+function GlobalDataService.BackupAllConfigs()
+	local results = {}
+	
+	for dataName, dataItem in pairs(datas) do
+		local backupId = _createBackup(dataName, dataItem)
+		results[dataName] = {
+			success = backupId ~= nil,
+			backupId = backupId
+		}
+	end
+	
+	_logEvent("all_backups_created", "system", {results = results})
+	return results
+end
+
+--[[
+	Restores a data configuration from a backup
+	
+	@param backupId string ID of the backup to restore
+	@param overwriteExisting boolean Whether to overwrite existing data
+	@return boolean success
+]]
+function GlobalDataService.RestoreFromBackup(backupId, overwriteExisting)
+	local success, result = pcall(function()
+		return backupStore:GetAsync(backupId)
+	end)
+	
+	if not success or not result or not result.config then
+		_log("warn", "Failed to retrieve backup: "..tostring(backupId), true)
+		return false
+	end
+	
+	local dataName = result.dataName
+	if datas[dataName] and not overwriteExisting then
+		_log("warn", "Cannot restore backup: Data '"..dataName.."' already exists", true)
+		return false
+	end
+	
+	-- Stop existing data if it exists
+	if datas[dataName] then
+		GlobalDataService.StopData(dataName)
+	end
+	
+	local globalKey = _ensureGlobalKeyAsync()
+	if not globalKey then
+		_log("warn", "Cannot restore backup: Failed to get global key", true)
+		return false
+	end
+	
+	local dataItem = _deserializeDataItem(result.config, globalKey)
+	datas[dataName] = dataItem
+	
+	-- Start the data thread
+	dataItem._running = true
+	task.spawn(function()
+		_dataThread(dataName)
+	end)
+	
+	_log("info", "Data '"..dataName.."' restored from backup: "..backupId, false)
+	_logEvent("data_restored", dataName, {backupId = backupId, config = dataItem})
+	return true
+end
+
+--[[
+	Gets a list of available backups for a data name
+	
+	@param dataName string Name of the data
+	@return table backupList or nil
+]]
+function GlobalDataService.GetBackupList(dataName)
+	-- Note: This is a simplified implementation
+	-- In production, you'd maintain a separate index of backup IDs
+	local success, result = pcall(function()
+		-- This would typically query a backup index
+		return {message = "Backup listing not fully implemented - use specific backup IDs"}
+	end)
+	
+	if success then
+		return result
+	else
+		_log("warn", "Failed to get backup list: "..tostring(result), true)
+		return nil
+	end
+end
+
+--[[
+	Sets a time window restriction for data availability
+	
+	@param dataName string Name of the data
+	@param startHour number Start hour (0-23)
+	@param endHour number End hour (0-23)
+	@param timezone string Timezone (UTC, EST, PST, GMT, JST)
+	@return boolean success
+]]
+function GlobalDataService.SetTimeWindow(dataName, startHour, endHour, timezone)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot set time window: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	if not startHour or not endHour or startHour < 0 or startHour > 23 or endHour < 0 or endHour > 23 then
+		_log("warn", "Invalid time window: hours must be 0-23", true)
+		return false
+	end
+	
+	dataItem.timeWindow = {
+		startHour = startHour,
+		endHour = endHour,
+		timezone = timezone or "UTC"
+	}
+	
+	_log("info", "Time window set for '"..dataName.."': "..startHour..":00 to "..endHour..":00 "..(timezone or "UTC"), false)
+	_logEvent("time_window_set", dataName, {startHour = startHour, endHour = endHour, timezone = timezone})
+	return true
+end
+
+--[[
+	Sets seasonal restrictions for data availability
+	
+	@param dataName string Name of the data
+	@param seasons table Table of season names (spring, summer, autumn, winter)
+	@return boolean success
+]]
+function GlobalDataService.SetSeasonalRestrictions(dataName, seasons)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot set seasonal restrictions: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	if type(seasons) ~= "table" then
+		_log("warn", "Seasons must be a table", true)
+		return false
+	end
+	
+	-- Validate season names
+	for seasonName, _ in pairs(seasons) do
+		if not _SEASONS[seasonName] then
+			_log("warn", "Invalid season: "..tostring(seasonName), true)
+			return false
+		end
+	end
+	
+	dataItem.seasons = seasons
+	_log("info", "Seasonal restrictions set for '"..dataName.."': "..table.concat(_getTableKeys(seasons), ", "), false)
+	_logEvent("seasonal_restrictions_set", dataName, {seasons = seasons})
+	return true
+end
+
+--[[
+	Sets holiday exceptions for data availability
+	
+	@param dataName string Name of the data
+	@param holidays table Table of holiday names
+	@param allowOnHoliday boolean Whether to allow data on holidays
+	@return boolean success
+]]
+function GlobalDataService.SetHolidayExceptions(dataName, holidays, allowOnHoliday)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot set holiday exceptions: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	if type(holidays) ~= "table" then
+		_log("warn", "Holidays must be a table", true)
+		return false
+	end
+	
+	-- Validate holiday names
+	for holidayName, _ in pairs(holidays) do
+		if not _HOLIDAYS[holidayName] then
+			_log("warn", "Invalid holiday: "..tostring(holidayName), true)
+			return false
+		end
+	end
+	
+	dataItem.holidays = holidays
+	dataItem.holidayExceptions = {
+		allowOnHoliday = allowOnHoliday or false
+	}
+	
+	_log("info", "Holiday exceptions set for '"..dataName.."': "..table.concat(_getTableKeys(holidays), ", ").." (allow: "..tostring(allowOnHoliday), false)
+	_logEvent("holiday_exceptions_set", dataName, {holidays = holidays, allowOnHoliday = allowOnHoliday})
+	return true
+end
+
+--[[
+	Sets a custom schedule for data availability
+	
+	@param dataName string Name of the data
+	@param schedule table Custom schedule table
+	@return boolean success
+]]
+function GlobalDataService.SetCustomSchedule(dataName, schedule)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		_log("warn", "Cannot set custom schedule: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	if type(schedule) ~= "table" then
+		_log("warn", "Schedule must be a table", true)
+		return false
+	end
+	
+	-- Validate schedule format
+	for dayIndex, daySchedule in pairs(schedule) do
+		if type(dayIndex) ~= "number" or dayIndex < 0 or dayIndex > 6 then
+			_log("warn", "Invalid day index: "..tostring(dayIndex).." (must be 0-6)", true)
+			return false
+		end
+		
+		if type(daySchedule) ~= "table" then
+			_log("warn", "Day schedule must be a table", true)
+			return false
+		end
+		
+		for _, timeSlot in ipairs(daySchedule) do
+			if type(timeSlot) ~= "table" or not timeSlot.start or not timeSlot["end"] then
+				_log("warn", "Invalid time slot format", true)
+				return false
+			end
+			
+			if timeSlot.start < 0 or timeSlot.start > 23.99 or timeSlot["end"] < 0 or timeSlot["end"] > 23.99 then
+				_log("warn", "Invalid time: hours must be 0-23.99", true)
+				return false
+			end
+		end
+	end
+	
+	dataItem.customSchedule = schedule
+	_log("info", "Custom schedule set for '"..dataName.."'", false)
+	_logEvent("custom_schedule_set", dataName, {schedule = schedule})
+	return true
+end
+
+--[[
+	Gets the current time restrictions for a data item
+	
+	@param dataName string Name of the data
+	@return table timeRestrictions or nil
+]]
+function GlobalDataService.GetTimeRestrictions(dataName)
+	local dataItem = datas[dataName]
+	if not dataItem then
+		return nil
+	end
+	
+	return {
+		timeWindow = dataItem.timeWindow,
+		seasons = dataItem.seasons,
+		holidays = dataItem.holidays,
+		holidayExceptions = dataItem.holidayExceptions,
+		customSchedule = dataItem.customSchedule,
+		allowedDays = dataItem.allowedDays,
+		dateStart = dataItem.dateStart,
+		dateEnd = dataItem.dateEnd
+	}
+end
+
+--[[
+	Sets the performance optimization strategy
+	
+	@param strategy string Strategy to use (aggressive, balanced, conservative)
+	@return boolean success
+]]
+function GlobalDataService.SetOptimizationStrategy(strategy)
+	if not _OPTIMIZATION_STRATEGIES[strategy] then
+		_log("warn", "Invalid optimization strategy: "..tostring(strategy), true)
+		return false
+	end
+	
+	_optimizationSettings.strategy = strategy
+	_log("info", "Optimization strategy set to: "..strategy, false)
+	_logEvent("optimization_strategy_changed", "system", {strategy = strategy})
+	return true
+end
+
+--[[
+	Enables or disables data preloading
+	
+	@param enabled boolean Whether to enable preloading
+	@return boolean success
+]]
+function GlobalDataService.SetPreloading(enabled)
+	_optimizationSettings.preloadEnabled = enabled and true or false
+	_log("info", "Data preloading " .. (_optimizationSettings.preloadEnabled and "enabled" or "disabled"), false)
+	_logEvent("preloading_changed", "system", {enabled = _optimizationSettings.preloadEnabled})
+	return true
+end
+
+--[[
+	Enables or disables data caching
+	
+	@param enabled boolean Whether to enable caching
+	@return boolean success
+]]
+function GlobalDataService.SetCaching(enabled)
+	_optimizationSettings.cacheEnabled = enabled and true or false
+	
+	if not enabled then
+		-- Clear existing cache
+		_dataCache = {}
+		_cacheTimestamps = {}
+		_log("info", "Cache cleared and disabled", false)
+	end
+	
+	_log("info", "Data caching " .. (_optimizationSettings.cacheEnabled and "enabled" or "disabled"), false)
+	_logEvent("caching_changed", "system", {enabled = _optimizationSettings.cacheEnabled})
+	return true
+end
+
+--[[
+	Sets the cache TTL (Time To Live) in seconds
+	
+	@param ttl number Cache TTL in seconds
+	@return boolean success
+]]
+function GlobalDataService.SetCacheTTL(ttl)
+	if not ttl or ttl < 1 then
+		_log("warn", "Cache TTL must be >= 1 second", true)
+		return false
+	end
+	
+	_CACHE_TTL = ttl
+	_log("info", "Cache TTL set to "..ttl.." seconds", false)
+	_logEvent("cache_ttl_changed", "system", {ttl = ttl})
+	return true
+end
+
+--[[
+	Preloads data for a specific data item
+	
+	@param dataName string Name of the data to preload
+	@return boolean success
+]]
+function GlobalDataService.PreloadData(dataName)
+	if not datas[dataName] then
+		_log("warn", "Cannot preload: Data '"..dataName.."' does not exist", true)
+		return false
+	end
+	
+	_preloadData(dataName)
+	return true
+end
+
+--[[
+	Preloads data for all data items
+	
+	@return table preloadResults
+]]
+function GlobalDataService.PreloadAllData()
+	local results = {}
+	
+	for dataName, _ in pairs(datas) do
+		_preloadData(dataName)
+		results[dataName] = true
+	end
+	
+	_log("info", "Preloaded data for "..#_getTableKeys(results).." data items", false)
+	_logEvent("all_data_preloaded", "system", {count = #_getTableKeys(results)})
+	return results
+end
+
+--[[
+	Clears the data cache
+	
+	@param dataName string Optional specific data name to clear, or nil for all
+	@return boolean success
+]]
+function GlobalDataService.ClearCache(dataName)
+	if dataName then
+		_dataCache[dataName] = nil
+		_cacheTimestamps[dataName] = nil
+		_log("info", "Cache cleared for '"..dataName.."'", false)
+	else
+		_dataCache = {}
+		_cacheTimestamps = {}
+		_log("info", "All cache cleared", false)
+	end
+	
+	_logEvent("cache_cleared", dataName or "system", {dataName = dataName})
+	return true
+end
+
+--[[
+	Gets performance optimization recommendations
+	
+	@return table recommendations
+]]
+function GlobalDataService.GetPerformanceRecommendations()
+	return _getPerformanceRecommendations()
+end
+
+--[[
+	Gets current optimization settings
+	
+	@return table settings
+]]
+function GlobalDataService.GetOptimizationSettings()
+	return {
+		strategy = _optimizationSettings.strategy,
+		preloadEnabled = _optimizationSettings.preloadEnabled,
+		cacheEnabled = _optimizationSettings.cacheEnabled,
+		cacheTTL = _CACHE_TTL,
+		cacheSize = #_getTableKeys(_dataCache)
+	}
 end
 
 --// Start health check loop
