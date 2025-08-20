@@ -92,7 +92,7 @@ local _forcedLogCount = 0
 
 --// Private
 local _Version = "1.2.0"
-local VERSION_URL = "https://raw.githubusercontent.com/V1nyI/roblox-GlobalDataService/refs/heads/main/Version.txt"
+local VERSION_URL = "https://raw.githubusercontent.com/drgloo/GlobalDataService/refs/heads/main/Version.txt"
 
 --// Global key cache
 local _cachedGlobalKey = nil
